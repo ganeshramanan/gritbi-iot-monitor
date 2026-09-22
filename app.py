@@ -111,7 +111,7 @@ def api_readings():
 
     latest_alerts = check_alerts(current_readings[-1]) if current_readings else []
 
-    return jsonify({
+    response = jsonify({
         "readings": current_readings,
         "alerts": latest_alerts,
         "thresholds": {
@@ -119,11 +119,30 @@ def api_readings():
             "humidity_high": HUMIDITY_HIGH, "humidity_low": HUMIDITY_LOW,
         }
     })
+    # Prevent any browser/proxy from caching this endpoint -- it must always be fresh
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    return response
 
 
-# Start the background sensor simulation thread once, when the app starts
-sensor_thread = threading.Thread(target=sensor_loop, daemon=True)
-sensor_thread.start()
+# Start the background sensor simulation thread lazily, on the first incoming
+# request rather than at module import time. This guarantees the thread runs
+# inside the actual worker process that serves HTTP traffic -- avoiding a subtle
+# bug where a thread started before gunicorn forks workers can end up running
+# in a different process than the one answering requests.
+_thread_started = False
+_thread_start_lock = threading.Lock()
+
+
+@app.before_request
+def start_sensor_thread_once():
+    global _thread_started
+    if not _thread_started:
+        with _thread_start_lock:
+            if not _thread_started:
+                thread = threading.Thread(target=sensor_loop, daemon=True)
+                thread.start()
+                _thread_started = True
+
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=5007)
